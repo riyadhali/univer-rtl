@@ -29,6 +29,33 @@ English | [简体中文](./docs/readme/zh-CN.md) | [繁體中文](./docs/readme/
 [![Trendshift](https://trendshift.io/api/badge/repositories/4376)](https://trendshift.io/repositories/4376)
 
 </div>
+## 🌍 Arabic & RTL Support
+
+This fork adds right-to-left (RTL) rendering for Arabic — and any RTL script — at the rendering-engine level. It is developed and maintained by **Riyadh Ali** (github.com/riyadhali/univer-rtl), with AI-agent contributions in testing, documentation, and review.
+
+### What is covered
+
+- **Visual-order text engine** — a dependency-free BiDi processor in `@univerjs/engine-render` (`src/basics/rtl-processor.ts`) plus layout hooks that re-order glyph runs per line into visual order. Base direction is resolved per line: any RTL character makes the line RTL (a Latin-leading fragment such as `GLM-5.3-Flash..` still paints at the right edge, like Word with an RTL paragraph); pure-Latin lines stay LTR even inside Arabic documents; empty/weak lines (`, "(", digits`) inherit the document locale direction (`ar-SA` → RTL) and then the nearest preceding strong paragraph, so pressing Enter inside an Arabic paragraph keeps the new line RTL.
+- **Arabic shaping integrity** — an Arabic word is shaped as ONE glyph painted with a single `fillText`, so the browser performs full OpenType joining and diacritics; words are never split letter-by-letter after punctuation. Backspace/Delete remove exactly one character (surrogate-pair aware), never the whole merged word-glyph.
+- **Bidi rules & bracket mirroring** — UAX #9 resolution with numeric/weak handling for mixed content (e.g. `12:30`, `1,000`, `94%`, Arabic punctuation `، ٫ ٬`), and L4 drawn-shape mirroring (brackets, quotes) through a paint-only `rtlVisualContent` field — the logical `content` stays authoritative for hit-testing and selection.
+- **Selection & caret geometry** — a multi-glyph selection paints as one visual block over the full glyph extent regardless of languages inside; a collapsed caret mirrors to the side of the surrounding glyph. Painting only — logical offsets and selection state are never modified.
+- **Editing reliability in Docs — body, page headers and footers (Chrome and Firefox)** — the model-side selection is the single source of truth for where the next typed character belongs (immune to stale skeleton-derived render ranges); insert mutations advance the caret synchronously and carry the header/footer `segmentId`, so fast mixed Arabic/Latin typing never scrambles letters, Enter inside a header stays inside the header, and deleting a selection (Select All + Delete) no longer crashes.
+- **Firefox compatibility** — the document layout Worker's capability check tolerates Firefox's whole-pixel `OffscreenCanvas` glyph quantization (relative tolerance instead of a fixed 1px floor), so a perfectly healthy Worker is no longer rejected; RTL presentation remains owned by the engine-render layer, and Worker layout sessions run on the proven LTR path.
+
+### Where the code lives
+
+The implementation lives in `@univerjs/engine-render` (`src/basics/rtl-processor.ts`, `src/components/docs/layout/block/paragraph/line-adjustment.ts`, `language-ruler.ts`, `extensions/font-and-base-line.ts`) with hooks in the Docs layout, selection/caret geometry (`docs-ui`), the Docs editing commands/mutations, and the layout-Worker service. Full technical documentation, change log, and known limitations: **`RTL_SUPPORT.md`**.
+
+### Scope notes
+
+- **Docs**: full RTL support — body, page headers, and footers, in Chrome and Firefox.
+- **Sheets**: Arabic text in cells, the cell editor, and the formula bar follows the same engine path; a full right-to-left sheet (worksheet-level column mirroring from `rightToLeft`) is **not yet implemented**.
+- **Slides**: text boxes share the Docs text engine; the upstream table-insert flow into a slide text frame is still broken upstream.
+
+### To try it
+
+Run the examples workbench (`pnpm dev` in `examples/`), open the Docs example, and switch the workbench direction/locale to RTL (`العربية` / `ar-SA`) — the document, its header/footer areas, and the editing experience run in RTL end-to-end.
+
 
 ## ✨ What is Univer?
 
