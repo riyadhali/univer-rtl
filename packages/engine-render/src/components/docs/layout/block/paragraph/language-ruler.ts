@@ -54,6 +54,14 @@ export function otherHandler(
             break;
         }
 
+        // Arabic characters must NOT be consumed letter-by-letter here: a
+        // word following punctuation ("،كلمة") would be split into isolated
+        // glyphs and painted unjoined. Break so the main loop hands the run
+        // to ArabicHandler, which merges the whole word into one glyph.
+        if (hasArabic(char)) {
+            break;
+        }
+
         const config = getFontCreateConfig(index + step, viewModel, paragraphNode, sectionBreakConfig, paragraph);
         const glyph = createSkeletonLetterGlyph(char, config, getCustomRangeGlyphMetrics(index + step, viewModel, paragraphNode, config));
 

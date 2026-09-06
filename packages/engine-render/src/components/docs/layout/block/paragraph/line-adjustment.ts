@@ -14,17 +14,19 @@
  * limitations under the License.
  */
 
-import type { IParagraphStyle } from '@univerjs/core';
+import type { IParagraphStyle, Nullable } from '@univerjs/core';
 import type {
     IDocumentSkeletonDivide,
     IDocumentSkeletonLine,
     IDocumentSkeletonPage,
 } from '../../../../../basics/i-document-skeleton-cached';
 import type { ISectionBreakConfig } from '../../../../../basics/interfaces';
+import type { TextDirection } from '../../../../../basics/rtl-processor';
 import type { DataStreamTreeNode } from '../../../view-model/data-stream-tree-node';
 import type { DocumentViewModel } from '../../../view-model/document-view-model';
 import { HorizontalAlign, WrapStrategy } from '@univerjs/core';
 import { cjk } from '../../../../../basics/cjk-regexp';
+import { computeVisualOrderForItems, containsRTL } from '../../../../../basics/rtl-processor';
 import {
     isCjkLeftAlignedPunctuation,
     isCjkRightAlignedPunctuation,
@@ -353,6 +355,181 @@ function addHyphenDash(
     }
 }
 
+/**
+ * Base direction of a line, chosen so that Arabic documents keep their RTL
+ * flow even when a line STARTS with a Latin token ("GLM-5.3-Flash.. أحدث
+ * ضربة صينية…"): the presence of any RTL character in the line makes the
+ * line RTL — the Latin fragment paints at the line's right edge, exactly
+ * like Word with an RTL paragraph flag. First-strong (UAX #9 P2) would
+ * wrongly flip such lines to LTR. Pure-Latin lines stay LTR.
+ */
+function getLineBaseDirection(line: IDocumentSkeletonLine, docDefaultDirection: TextDirection): TextDirection {
+    let content = '';
+
+    for (const divide of line.divides) {
+        for (const glyph of divide.glyphGroup) {
+            content += glyph.content ?? '';
+
+            if (content.length >= 256) {
+                break;
+            }
+        }
+
+        if (content.length >= 256) {
+            break;
+        }
+    }
+
+    if (containsRTL(content)) {
+        return 'rtl';
+    }
+
+    // Strong LTR text keeps the line LTR even inside an RTL document.
+    if (hasStrongLTR(content)) {
+        return 'ltr';
+    }
+
+    // Empty or neutral-only lines ("(", quotes, digits) follow the
+    // document's base direction instead of waiting for a strong character
+    // ("late detection"): in an Arabic document a paragraph starts RTL from
+    // birth, so "(" paints at the right edge and never flips.
+    return docDefaultDirection;
+}
+
+// Scripts with strong LTR direction. Digits are deliberately excluded —
+// they are bidi-weak and follow the paragraph direction.
+const STRONG_LTR_PATTERN = /[A-Za-z\u00c0-\u024f\u0370-\u04ff\u0530-\u058f\u2e80-\u9fff\uac00-\ud7af]/;
+
+function hasStrongLTR(content: string): boolean {
+    return STRONG_LTR_PATTERN.test(content);
+}
+
+const RTL_LOCALE_PREFIXES = ['ar', 'he', 'iw', 'fa', 'ur', 'ps', 'sd', 'ug', 'yi', 'dv', 'ckb'];
+
+/**
+ * The document's base direction comes from its locale ("تنسيق المستند"):
+ * an ar-SA document opens paragraphs RTL by default.
+ */
+function isRtlLocale(locale: Nullable<string>): boolean {
+    if (!locale) {
+        return false;
+    }
+
+    const normalized = locale.toLowerCase().replace(/[-_]/g, '');
+    return RTL_LOCALE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+/**
+ * Weak/empty paragraphs inherit the direction of the nearest PRECEDING
+ * paragraph with strong content — pressing Enter inside an Arabic paragraph
+ * keeps the new (empty) paragraph RTL instead of "losing the memory" and
+ * dropping the caret to the left. The document-locale default is the final
+ * fallback. The scan walks BACKWARD over the raw dataStream (paragraph
+ * boundaries are '\r'), so tables and other node boundaries in the paragraphs
+ * array cannot break the chain.
+ */
+function getInheritedBaseDirection(viewModel: DocumentViewModel, paragraphStartIndex: number, docDefaultDirection: TextDirection): TextDirection {
+    const dataStream = viewModel.getBody()?.dataStream ?? '';
+
+    let end = paragraphStartIndex - 1;
+    let scanned = 0;
+
+    while (end > 0 && scanned < 3) {
+        let start = end - 1;
+
+        while (start > 0 && dataStream[start] !== '\r') {
+            start--;
+        }
+
+        const text = dataStream.slice(start + 1, end);
+
+        if (text.trim().length > 0) {
+            if (containsRTL(text)) {
+                return 'rtl';
+            }
+
+            if (hasStrongLTR(text)) {
+                return 'ltr';
+            }
+
+            scanned++;
+        }
+
+        end = start;
+    }
+
+    return docDefaultDirection;
+}
+
+/**
+ * Excel-like General alignment: when no horizontal alignment is configured,
+ * right-to-left lines start from the right edge instead of the left one.
+ */
+function getEffectiveLineHorizontalAlign(line: IDocumentSkeletonLine, configured: HorizontalAlign, docDefaultDirection: TextDirection): HorizontalAlign {
+    if (configured !== HorizontalAlign.UNSPECIFIED) {
+        return configured;
+    }
+
+    return getLineBaseDirection(line, docDefaultDirection) === 'rtl' ? HorizontalAlign.RIGHT : HorizontalAlign.LEFT;
+}
+
+/**
+ * Place right-to-left glyph runs at their correct visual positions.
+ *
+ * The document skeleton keeps glyphs in logical order and assigns `left`
+ * positions cumulatively left-to-right, which reverses the visual word order
+ * of Arabic sentences ("بسم الله" would paint "بسم" leftmost). This pass
+ * computes the bidi visual order of the divide's glyphs and reassigns their
+ * `left` values, so the first logical word paints at the right edge. Glyph
+ * widths stay untouched: each multi-character glyph is still painted by the
+ * canvas shaper as a correctly joined Arabic word.
+ */
+function applyRtlGlyphOrder(line: IDocumentSkeletonLine, docDefaultDirection: TextDirection) {
+    // The line base direction is resolved ONCE (contains-RTL rule with the
+    // document-locale default for weak lines) and passed to the reorder pass
+    // — a Latin-leading line inside an Arabic paragraph is reordered as RTL
+    // instead of flipping to LTR via first-strong detect.
+    const baseDirection = getLineBaseDirection(line, docDefaultDirection);
+
+    for (const divide of line.divides) {
+        const { glyphGroup } = divide;
+
+        if (glyphGroup.length < 2) {
+            continue;
+        }
+
+        if (!glyphGroup.some((glyph) => containsRTL(glyph.content ?? ''))) {
+            continue;
+        }
+
+        const order = computeVisualOrderForItems(glyphGroup.map((glyph) => ({ content: glyph.content ?? '' })), baseDirection);
+
+        // Rule L4: hand the mirrored paint content (e.g. "(" drawn as ")",
+        // "«" as "»") to the paint extension for glyphs sitting on an odd
+        // (RTL) embedding level. The logical `content` stays untouched for
+        // hit testing and selection.
+        order.order.forEach((logicalIndex, visualIndex) => {
+            const glyph = glyphGroup[logicalIndex];
+            const paintContent = order.visualContents[visualIndex];
+
+            glyph.rtlVisualContent = paintContent !== (glyph.content ?? '') ? paintContent : undefined;
+        });
+
+        if (!order.reordered) {
+            continue;
+        }
+
+        let left = 0;
+
+        for (const logicalIndex of order.order) {
+            const glyph = glyphGroup[logicalIndex];
+
+            glyph.left = left;
+            left += glyph.width;
+        }
+    }
+}
+
 export function lineAdjustment(
     pages: IDocumentSkeletonPage[],
     viewModel: DocumentViewModel,
@@ -361,6 +538,14 @@ export function lineAdjustment(
 ) {
     const { endIndex } = paragraphNode;
     const paragraph = viewModel.getParagraph(endIndex) || { startIndex: 0, paragraphId: 'para_render_fallback' };
+
+    // The document locale decides the base direction of weak/empty lines,
+    // refined by the nearest preceding strong paragraph (Enter inheritance).
+    const docDefaultDirection: TextDirection = getInheritedBaseDirection(
+        viewModel,
+        paragraph.startIndex,
+        isRtlLocale(viewModel.getSnapshot()?.locale) ? 'rtl' : 'ltr'
+    );
 
     const { paragraphStyle = {} } = paragraph;
     const { horizontalAlign = HorizontalAlign.UNSPECIFIED } = paragraphStyle;
@@ -386,7 +571,10 @@ export function lineAdjustment(
                     shrinkStartAndEndCJKPunctuation(line);
                     restoreLastCJKGlyphWidth(line);
                     addHyphenDash(line, viewModel, paragraphNode, sectionBreakConfig, paragraphStyle);
-                    horizontalAlignHandler(line, horizontalAlign, shouldAllowOverflowHorizontalOffset(sectionBreakConfig));
+                    // Handle horizontal align: left\center\right\justified\distributed.
+                    horizontalAlignHandler(line, getEffectiveLineHorizontalAlign(line, horizontalAlign, docDefaultDirection), shouldAllowOverflowHorizontalOffset(sectionBreakConfig));
+                    // Place right-to-left glyph runs at their correct visual positions.
+                    applyRtlGlyphOrder(line, docDefaultDirection);
                 }
             }
         }

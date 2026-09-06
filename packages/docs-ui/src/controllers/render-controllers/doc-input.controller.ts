@@ -19,7 +19,7 @@ import type { IInsertTextCommandParams } from '@univerjs/docs';
 import type { IRenderContext, IRenderModule } from '@univerjs/engine-render';
 import type { Subscription } from 'rxjs';
 import { Disposable, ICommandService, Inject, Optional, SHEET_EDITOR_UNITS } from '@univerjs/core';
-import { DocSkeletonManagerService, InsertTextCommand } from '@univerjs/docs';
+import { DocSelectionManagerService, DocSkeletonManagerService, InsertTextCommand } from '@univerjs/docs';
 import { getCustomDecorationAtPosition, getCustomRangeAtPosition, getTextRunAtPosition } from '../../basics/paragraph';
 import { AfterSpaceCommand } from '../../commands/commands/auto-format.command';
 import { ReplaceSelectionCommand } from '../../commands/commands/replace-content.command';
@@ -34,6 +34,7 @@ export class DocInputController extends Disposable implements IRenderModule {
         private readonly _context: IRenderContext<DocumentDataModel>,
         @Inject(DocSelectionRenderService) private readonly _docSelectionRenderService: DocSelectionRenderService,
         @Inject(DocSkeletonManagerService) private readonly _docSkeletonManagerService: DocSkeletonManagerService,
+        @Inject(DocSelectionManagerService) private readonly _docSelectionManagerService: DocSelectionManagerService,
         @ICommandService private readonly _commandService: ICommandService,
         @Inject(DocMenuStyleService) private readonly _docMenuStyleService: DocMenuStyleService,
         @Optional(IDocEmbedInteractionBoundaryService) _embedInteractionBoundaryService?: IDocEmbedInteractionBoundaryService,
@@ -81,6 +82,26 @@ export class DocInputController extends Disposable implements IRenderModule {
 
             const { segmentId } = activeRange;
 
+            // PROTECTION against stale listeners: the render-side active range
+            // is derived from the skeleton, which the layout worker refreshes
+            // asynchronously. Right after a mutation (backspace, enter, or a
+            // space-triggered re-layout) it can be stale or reset to zero, so
+            // characters land at the wrong offset and words scramble ("how are
+            // you" → "hwo ha"). The model-side selection is advanced
+            // synchronously with every mutation (scheduleDocumentSelectionUpdate)
+            // and is the single source of truth for where the next character
+            // belongs. Prefer it whenever it describes the same segment; fall
+            // back to the render range only when the model has none yet.
+            const modelRange = this._docSelectionManagerService.getActiveTextRange();
+            const range = modelRange != null && (modelRange.segmentId ?? '') === (activeRange.segmentId ?? '')
+                ? {
+                    startOffset: modelRange.startOffset,
+                    endOffset: modelRange.endOffset,
+                    collapsed: modelRange.startOffset === modelRange.endOffset,
+                    segmentId: modelRange.segmentId,
+                }
+                : activeRange;
+
             const docDataModel = this._context.unit;
             const originBody = docDataModel.getSelfOrHeaderFooterModel(segmentId)?.getBody();
             if (!originBody) {
@@ -90,9 +111,9 @@ export class DocInputController extends Disposable implements IRenderModule {
             // Insert content's style should follow the text style of the current position.
             const defaultTextStyle = this._docMenuStyleService.getDefaultStyle();
             const cacheStyle = this._docMenuStyleService.getStyleCache();
-            const curCustomRange = getCustomRangeAtPosition(originBody?.customRanges ?? [], activeRange.endOffset, SHEET_EDITOR_UNITS.includes(unitId));
-            const curTextRun = getTextRunAtPosition(originBody, activeRange.endOffset, defaultTextStyle, cacheStyle, SHEET_EDITOR_UNITS.includes(unitId));
-            const curCustomDecorations = getCustomDecorationAtPosition(originBody?.customDecorations ?? [], activeRange.endOffset);
+            const curCustomRange = getCustomRangeAtPosition(originBody?.customRanges ?? [], range.endOffset, SHEET_EDITOR_UNITS.includes(unitId));
+            const curTextRun = getTextRunAtPosition(originBody, range.endOffset, defaultTextStyle, cacheStyle, SHEET_EDITOR_UNITS.includes(unitId));
+            const curCustomDecorations = getCustomDecorationAtPosition(originBody?.customDecorations ?? [], range.endOffset);
 
             const insertBody = {
                 dataStream: content,
@@ -118,7 +139,7 @@ export class DocInputController extends Disposable implements IRenderModule {
                     endIndex: content.length - 1,
                 })),
             };
-            const hasSelectedStructure = !activeRange.collapsed && (
+            const hasSelectedStructure = !range.collapsed && (
                 Boolean(originBody.blockRanges?.length) ||
                 Boolean(originBody.columnGroups?.length) ||
                 Boolean(originBody.customBlocks?.length) ||
@@ -136,7 +157,7 @@ export class DocInputController extends Disposable implements IRenderModule {
                 await this._commandService.executeCommand<IInsertTextCommandParams>(InsertTextCommand.id, {
                     unitId,
                     body: insertBody,
-                    range: activeRange,
+                    range,
                     segmentId,
                 });
             }

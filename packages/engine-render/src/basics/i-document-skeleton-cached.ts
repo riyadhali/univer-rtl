@@ -299,6 +299,7 @@ export interface IDocumentSkeletonGlyph {
     drawingId?: string; // drawing.drawingId
     fauxBoldStrokeWidth?: number;
     tabLeader?: TabStopLeader;
+    rtlVisualContent?: string; // RTL: mirrored paint content (e.g. "(" drawn as ")") — logical content stays untouched
 }
 
 export interface IDocumentSkeletonBullet {

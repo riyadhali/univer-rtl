@@ -132,6 +132,7 @@ export const BreakLineCommand: ICommand<IBreakLineCommandParams> = {
             id: RichTextEditingMutation.id,
             params: {
                 unitId,
+                segmentId,
                 actions: [],
                 textRanges,
                 debounce: true,

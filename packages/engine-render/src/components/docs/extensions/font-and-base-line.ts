@@ -403,6 +403,19 @@ export class FontAndBaseLine extends docExtension {
             return;
         }
 
+        // Bidi rule L4: a glyph sitting on an RTL embedding level paints its
+        // mirrored counterpart ("(" as ")", "«" as "»"). The layout pass
+        // (applyRtlGlyphOrder) precomputes that paint-only string; the logical
+        // `content` stays authoritative for hit testing and selection.
+        const paintContent = glyph.rtlVisualContent ?? content;
+
+        // RTL-DIAG-TEMP: log positions of RTL glyphs to trace the header reversal
+        if (paintContent && /[\u0600-\u06ff]/.test(paintContent) && (window as any).__rtlFbCount !== undefined && (window as any).__rtlFbCount < 40) {
+            (window as any).__rtlFbCount = ((window as any).__rtlFbCount ?? -1) + 1;
+            // eslint-disable-next-line no-console
+            console.log('[fb]', JSON.stringify({ c: paintContent.slice(0, 12), left: Math.round(glyph.left), w: Math.round(glyph.width), rvc: glyph.rtlVisualContent != null }));
+        }
+
         if (glyph.glyphType === GlyphType.TAB && glyph.tabLeader != null) {
             const leader = this._getTabLeaderCharacter(glyph.tabLeader);
             if (leader) {
@@ -426,7 +439,7 @@ export class FontAndBaseLine extends docExtension {
             ctx.translate(spanStartPoint.x + centerPoint.x, spanStartPoint.y + centerPoint.y);
             ctx.rotate(Math.PI / 2);
             ctx.translate(-width / 2, (aba + abd) / 2 - abd);
-            ctx.fillText(content, 0, 0);
+            ctx.fillText(paintContent, 0, 0);
             ctx.restore();
         } else {
             if (isCheckboxGlyph(content) && glyph.glyphType === GlyphType.LIST) {
@@ -451,7 +464,7 @@ export class FontAndBaseLine extends docExtension {
                     x_offset = (glyph.width - glyph.bBox.width) / 2;
                     y_offset = -(glyph.width - fontHeight) / 2;
                 }
-                ctx.fillText(content, spanPointWithFont.x + x_offset, spanPointWithFont.y + y_offset);
+                ctx.fillText(paintContent, spanPointWithFont.x + x_offset, spanPointWithFont.y + y_offset);
             }
         }
     }

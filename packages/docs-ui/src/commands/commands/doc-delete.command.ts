@@ -420,6 +420,23 @@ export function isDeleteOffsetInsideBlockRange(body: IDocumentBody, offset: numb
     }) ?? false;
 }
 
+// RTL: an Arabic word is merged into ONE skeleton glyph spanning several
+// code units, so glyph.count is a whole WORD, not one character. Deletion
+// must always remove exactly one user character (one code point): one code
+// unit, or two when a surrogate pair straddles the boundary.
+export function getSingleCharLength(dataStream: string, offset: number, direction: DeleteDirection): number {
+    const index = direction === DeleteDirection.LEFT ? offset - 1 : offset;
+    const char = dataStream[index];
+
+    if (char == null) {
+        return 0;
+    }
+
+    const code = char.charCodeAt(0);
+    const isSurrogate = code >= 0xd800 && code <= 0xdfff;
+    return isSurrogate ? 2 : 1;
+}
+
 // Handle BACKSPACE key.
 export const DeleteLeftCommand: ICommand = {
     id: 'doc.command.delete-left',
@@ -614,8 +631,10 @@ export const DeleteLeftCommand: ICommand = {
                             return true;
                         }
 
+                        const prePreCharLen = getSingleCharLength(body.dataStream, startOffset - preGlyph.count, DeleteDirection.LEFT);
+
                         cursor -= preGlyph.count;
-                        cursor -= prePreGlyph.count;
+                        cursor -= prePreCharLen;
 
                         result = await commandService.executeCommand<IDeleteTextCommandParams>(DeleteTextCommand.id, {
                             unitId: docDataModel.getUnitId(),
@@ -626,17 +645,19 @@ export const DeleteLeftCommand: ICommand = {
                             },
                             segmentId,
                             direction: DeleteDirection.LEFT,
-                            len: prePreGlyph.count,
+                            len: prePreCharLen,
                         });
                     }
                 } else {
-                    cursor -= preGlyph.count;
+                    const prevCharLen = getSingleCharLength(body.dataStream, startOffset, DeleteDirection.LEFT);
+
+                    cursor -= prevCharLen;
                     result = await commandService.executeCommand<IDeleteTextCommandParams>(DeleteTextCommand.id, {
                         unitId: docDataModel.getUnitId(),
                         range: actualRange,
                         segmentId,
                         direction: DeleteDirection.LEFT,
-                        len: preGlyph.count,
+                        len: prevCharLen,
                     });
                 }
             } else {
@@ -768,7 +789,7 @@ export const DeleteRightCommand: ICommand = {
                         },
                         segmentId,
                         direction: DeleteDirection.RIGHT,
-                        len: nextGlyph.count,
+                        len: getSingleCharLength(body.dataStream, startOffset + 1, DeleteDirection.RIGHT),
                     });
                 }
             } else {
@@ -777,7 +798,7 @@ export const DeleteRightCommand: ICommand = {
                     range: actualRange,
                     segmentId,
                     direction: DeleteDirection.RIGHT,
-                    len: needDeleteGlyph.count,
+                    len: getSingleCharLength(body.dataStream, startOffset, DeleteDirection.RIGHT),
                 });
             }
         } else {

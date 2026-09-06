@@ -976,7 +976,12 @@ export class DocLayoutExecutorService extends Disposable {
                         modelRevision: session.modelRevision,
                         locale: this._localeService.getCurrentLocale(),
                         localeData: this._localeService.getLocales(),
-                        direction: this._localeService.getDirection(),
+                        // The layout Worker's own direction-aware layout is a WIP upstream
+                        // feature that paints mixed runs character-reversed in the
+                        // header/footer ghost preview. RTL presentation is fully owned by
+                        // the engine-render RTL layer (contains-RTL reorder + L4), so the
+                        // layout session always runs on the proven LTR path.
+                        direction: 'ltr',
                     };
                     executor.createSession(request).then(resolve, reject);
                 }, reject);

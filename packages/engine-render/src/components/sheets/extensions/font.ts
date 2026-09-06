@@ -41,7 +41,7 @@ import {
     Tools,
     WrapStrategy,
 } from '@univerjs/core';
-import { FIX_ONE_PIXEL_BLUR_OFFSET } from '../../../basics';
+import { containsRTL, FIX_ONE_PIXEL_BLUR_OFFSET } from '../../../basics';
 import { VERTICAL_ROTATE_ANGLE } from '../../../basics/text-rotation';
 import { clampRange, inViewRanges } from '../../../basics/tools';
 import { Text } from '../../../shape/text';
@@ -78,6 +78,12 @@ function getResolvedRenderHorizontalAlign(fontCache: IFontCacheItem, cellData: I
 
     if (cellData.t === CellValueType.BOOLEAN) {
         return HorizontalAlign.CENTER;
+    }
+
+    // Excel-like General alignment for text: right-to-left cell values start
+    // from the right edge of the cell.
+    if (typeof cellData.v === 'string' && containsRTL(cellData.v)) {
+        return HorizontalAlign.RIGHT;
     }
 
     return horizontalAlign;

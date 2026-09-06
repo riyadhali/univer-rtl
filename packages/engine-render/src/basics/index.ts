@@ -27,6 +27,7 @@ export * from './interfaces';
 export * from './path2';
 export * from './performance-monitor';
 export * from './range';
+export * from './rtl-processor';
 export * from './scroll-xy';
 export * from './text-rotation';
 export * from './tools';

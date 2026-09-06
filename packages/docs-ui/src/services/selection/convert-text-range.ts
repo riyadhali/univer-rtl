@@ -33,6 +33,7 @@ import { DataStreamTreeTokenType, PositionedObjectLayoutType } from '@univerjs/c
 import { shouldUseInlineTextSelectionForDocsCustomBlockDrawing } from '@univerjs/docs';
 import {
     compareDocumentSkeletonNestedPagePathOrder,
+    containsRTL,
     DocumentSkeletonPageType,
     getDocsTableRenderViewport,
     getDocumentSkeletonNestedPageOffset,
@@ -325,37 +326,83 @@ export class NodePositionConvertToCursor {
                 ? startY + lineHeight - marginTop - marginBottom
                 : startY + paddingTop + contentHeight + paddingBottom;
 
-            if (start_sp === 0 && end_sp === glyphGroup.length - 1) {
-                borderBoxPosition = {
-                    startX: startX + firstGlyphLeft + (isCurrentList ? firstGlyphWidth : 0),
-                    startY: borderBoxStartY,
-                    endX: startX + lastGlyphLeft + (isEndBack ? 0 : lastGlyphWidth),
-                    endY: borderBoxEndY,
-                };
+            // Presentational-only caret side rule: for glyphs whose content is
+            // RTL the painted caret/range edge faces the mirrored visual side
+            // (the side the next logical character paints on). This affects
+            // the painted rectangle ONLY — the logical offsets pushed into
+            // `cursorList` below stay on the plain upstream path, so selection
+            // state and typed text can never be affected.
+            const startMirrored = containsRTL(firstGlyph?.content ?? '');
+            const endMirrored = containsRTL(lastGlyph?.content ?? '');
 
-                contentBoxPosition = {
-                    startX: startX + firstGlyphLeft + (isCurrentList ? firstGlyphWidth : 0),
-                    startY: startY + paddingTop + asc - anchorGlyph.bBox.ba,
-                    endX: startX + lastGlyphLeft + (isEndBack ? 0 : lastGlyphWidth),
-                    endY: startY + paddingTop + asc + anchorGlyph.bBox.bd,
-                };
+            let rangeStartX: number;
+            let rangeEndX: number;
+
+            if (start_sp === 0 && end_sp === glyphGroup.length - 1) {
+                rangeStartX = startMirrored
+                    ? firstGlyphLeft + (isCurrentList ? 0 : firstGlyphWidth)
+                    : firstGlyphLeft + (isCurrentList ? firstGlyphWidth : 0);
+                rangeEndX = endMirrored
+                    ? lastGlyphLeft + (isEndBack ? lastGlyphWidth : 0)
+                    : lastGlyphLeft + (isEndBack ? 0 : lastGlyphWidth);
             } else {
                 const isStartBackFin = isStartBack && !isCurrentList;
 
-                borderBoxPosition = {
-                    startX: startX + firstGlyphLeft + (isStartBackFin ? 0 : firstGlyphWidth),
-                    startY: borderBoxStartY,
-                    endX: startX + lastGlyphLeft + (isEndBack ? 0 : lastGlyphWidth),
-                    endY: borderBoxEndY,
-                };
-
-                contentBoxPosition = {
-                    startX: startX + firstGlyphLeft + (isStartBackFin ? 0 : firstGlyphWidth),
-                    startY: startY + paddingTop + asc - anchorGlyph.bBox.ba,
-                    endX: startX + lastGlyphLeft + (isEndBack ? 0 : lastGlyphWidth),
-                    endY: startY + paddingTop + asc + anchorGlyph.bBox.bd,
-                };
+                rangeStartX = startMirrored
+                    ? firstGlyphLeft + (isStartBackFin ? firstGlyphWidth : 0)
+                    : firstGlyphLeft + (isStartBackFin ? 0 : firstGlyphWidth);
+                rangeEndX = endMirrored
+                    ? lastGlyphLeft + (isEndBack ? lastGlyphWidth : 0)
+                    : lastGlyphLeft + (isEndBack ? 0 : lastGlyphWidth);
             }
+
+            // Normalize so the painted rectangle is always well-ordered; the
+            // caret (collapsed range) keeps its single resolved boundary.
+            if (!collapsed) {
+                // A multi-glyph selection paints as ONE visual block covering
+                // the full painted extent of the covered glyphs — regardless
+                // of the languages inside. Per-boundary mirroring here would
+                // shrink the highlight to a middle slice (e.g. only the first
+                // bracket of a mixed line).
+                let minX = Number.POSITIVE_INFINITY;
+                let maxX = Number.NEGATIVE_INFINITY;
+
+                for (let i = start_sp; i <= end_sp; i++) {
+                    const g = glyphGroup[i];
+
+                    if (!g) {
+                        continue;
+                    }
+
+                    minX = Math.min(minX, g.left || 0);
+                    maxX = Math.max(maxX, (g.left || 0) + (g.width || 0));
+                }
+
+                if (!Number.isFinite(minX)) {
+                    minX = firstGlyphLeft;
+                    maxX = lastGlyphLeft + lastGlyphWidth;
+                }
+
+                rangeStartX = minX;
+                rangeEndX = maxX;
+            }
+
+            const rangeLeftX = Math.min(rangeStartX, rangeEndX);
+            const rangeRightX = Math.max(rangeStartX, rangeEndX);
+
+            borderBoxPosition = {
+                startX: startX + rangeLeftX,
+                startY: borderBoxStartY,
+                endX: startX + rangeRightX,
+                endY: borderBoxEndY,
+            };
+
+            contentBoxPosition = {
+                startX: startX + rangeLeftX,
+                startY: startY + paddingTop + asc - anchorGlyph.bBox.ba,
+                endX: startX + rangeRightX,
+                endY: startY + paddingTop + asc + anchorGlyph.bBox.bd,
+            };
 
             const clippedBorderBoxPosition = clipPositionToHorizontalRange(borderBoxPosition, this._horizontalClip);
             const clippedContentBoxPosition = clipPositionToHorizontalRange(contentBoxPosition, this._horizontalClip);

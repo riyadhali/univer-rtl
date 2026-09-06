@@ -118,8 +118,12 @@ export class DocsLayoutWorkerClientService extends Disposable implements IDocLay
     }
 
     async cancelLayout(request: IDocLayoutCancelRequest): Promise<void> {
-        await this._initialization;
-        return this._withTimeout(this._getRuntime().cancelLayout(request), 'cancel layout');
+        await this._initialization.catch(() => {});
+        const runtime = this._runtime;
+        if (runtime == null) {
+            return;
+        }
+        return this._withTimeout(runtime.cancelLayout(request), 'cancel layout');
     }
 
     async getPerformanceMetrics(
@@ -148,13 +152,20 @@ export class DocsLayoutWorkerClientService extends Disposable implements IDocLay
     }
 
     async disposeLayoutMount(request: IDocLayoutDisposeMountRequest): Promise<void> {
-        await this._initialization;
-        return this._withTimeout(this._getRuntime().disposeLayoutMount(request), 'dispose layout mount');
+        await this._initialization.catch(() => {});
+        const runtime = this._runtime;
+        if (runtime == null) {
+            return;
+        }
+        return this._withTimeout(runtime.disposeLayoutMount(request), 'dispose layout mount');
     }
 
     async disposeSession(request: IDocLayoutDisposeSessionRequest): Promise<void> {
-        await this._initialization;
-        await this._withTimeout(this._getRuntime().disposeSession(request), 'dispose session');
+        await this._initialization.catch(() => {});
+        const runtime = this._runtime;
+        if (runtime != null) {
+            await this._withTimeout(runtime.disposeSession(request), 'dispose session');
+        }
         this._performanceTracker.reset(request.unitId);
     }
 
@@ -223,16 +234,28 @@ export class DocsLayoutWorkerClientService extends Disposable implements IDocLay
             capabilities.fontProbe.content,
             capabilities.fontProbe.font
         );
-        const metricPairs = [
-            [mainMetrics.width, capabilities.fontProbe.width],
-            [mainMetrics.actualBoundingBoxAscent, capabilities.fontProbe.actualBoundingBoxAscent],
-            [mainMetrics.actualBoundingBoxDescent, capabilities.fontProbe.actualBoundingBoxDescent],
-        ];
-        if (metricPairs.some(([mainValue, workerValue]) =>
-            !Number.isFinite(mainValue) ||
-            !Number.isFinite(workerValue) ||
-            Math.abs(mainValue - workerValue) > FONT_METRICS_TOLERANCE
-        )) {
+        // Firefox quantizes glyph advances to whole pixels on OffscreenCanvas
+        // while the DOM canvas keeps fractional advances (measured on the same
+        // machine: DOM w=230.83 vs OffscreenCanvas w=231.87 over a 27-char
+        // probe => ~1.03px of harmless rounding noise, ~0.45%). Chrome matches
+        // exactly. The absolute 1px tolerance therefore rejects a perfectly
+        // healthy Worker on Firefox, so scale the allowance with the value and
+        // keep the absolute floor only for short strings. Broken font
+        // environments (missing fonts, no text support) still differ by tens
+        // of percent and stay rejected.
+        const metricsCompatible = (mainValue: number, workerValue: number): boolean => {
+            if (!Number.isFinite(mainValue) || !Number.isFinite(workerValue)) {
+                return false;
+            }
+
+            const tolerance = Math.max(FONT_METRICS_TOLERANCE, Math.abs(mainValue) * 0.015);
+            return Math.abs(mainValue - workerValue) <= tolerance;
+        };
+        if (
+            !metricsCompatible(mainMetrics.width, capabilities.fontProbe.width) ||
+            !metricsCompatible(mainMetrics.actualBoundingBoxAscent, capabilities.fontProbe.actualBoundingBoxAscent) ||
+            !metricsCompatible(mainMetrics.actualBoundingBoxDescent, capabilities.fontProbe.actualBoundingBoxDescent)
+        ) {
             throw new DocsLayoutWorkerCapabilityError(
                 'Document layout Worker font metrics differ from the main rendering context.'
             );

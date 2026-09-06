@@ -99,6 +99,7 @@ export const InsertTextCommand: ICommand<IInsertTextCommandParams> = {
                 debounce,
                 noNeedSetTextRange,
                 isEditing,
+                trigger: InsertTextCommand.id,
             },
         };
 

@@ -175,6 +175,7 @@ function scheduleDocumentSelectionUpdate(
     if (currentSelection != null) {
         const logicalTextRanges = textRanges.map((textRange, index) => ({
             ...textRange,
+            segmentId: textRange.segmentId ?? params.segmentId ?? '',
             collapsed: textRange.startOffset === textRange.endOffset,
             isActive: index === textRanges.length - 1,
         }));

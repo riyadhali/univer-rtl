@@ -19,6 +19,7 @@ import type { UniverRenderingContext } from '../context';
 import type { IShapeProps } from './shape';
 import { CellValueType, HorizontalAlign, TextDecoration, VerticalAlign } from '@univerjs/core';
 import { COLOR_BLACK_RGB } from '../basics';
+import { containsRTL, processTextForDraw, supportsCanvasBidiDirection } from '../basics/rtl-processor';
 import { DocSimpleSkeleton } from '../components/docs/layout/doc-simple-skeleton';
 import { Shape } from './shape';
 
@@ -115,7 +116,7 @@ export class Text extends Shape<ITextProps> {
             const baselineY = lineTop + line.baseline;
 
             // Draw the text
-            ctx.fillText(line.text, left + lineX, baselineY);
+            this._drawLineText(ctx, line.text, left + lineX, baselineY);
 
             // Draw underline if specified
             if (props.underline) {
@@ -175,11 +176,50 @@ export class Text extends Shape<ITextProps> {
                 }
             }
 
-            ctx.fillText(line.text, left + lineX, lineTop + line.baseline);
+            this._drawLineText(ctx, line.text, left + lineX, lineTop + line.baseline);
             lineTop += line.height;
         }
 
         return totalHeight;
+    }
+
+    /**
+     * Paint one line of text with correct right-to-left handling.
+     *
+     * Lines containing RTL characters are painted with the canvas context
+     * switched to the paragraph's base direction (detected with UAX #9 rule
+     * P2), so the platform shaper resolves bidi ordering and Arabic joining
+     * with the highest fidelity. When the platform `direction` attribute is
+     * not available, the rtl-processor falls back to shaping + visual
+     * reordering (see `processTextForDraw`).
+     */
+    private static _drawLineText(ctx: UniverRenderingContext, text: string, x: number, y: number) {
+        if (!containsRTL(text)) {
+            ctx.fillText(text, x, y);
+            return;
+        }
+
+        const platformDirection = supportsCanvasBidiDirection(ctx);
+        // eslint-disable-next-line no-console
+        console.log('[rtl-paint]', JSON.stringify({ platformDirection, text: text.slice(0, 60), ctxType: ctx?.constructor?.name }));
+        const processed = processTextForDraw(text, platformDirection);
+        const previousAlign = ctx.textAlign;
+
+        // Anchor the left edge at `x` regardless of the resolved direction,
+        // otherwise the default `start` alignment would mirror the layout.
+        ctx.textAlign = 'left';
+
+        if (platformDirection) {
+            const previousDirection = ctx.direction;
+
+            ctx.direction = processed.direction;
+            ctx.fillText(processed.text, x, y);
+            ctx.direction = previousDirection;
+        } else {
+            ctx.fillText(processed.text, x, y);
+        }
+
+        ctx.textAlign = previousAlign;
     }
 
     private static _getCachedLayout(text: string, fontStyle: string) {

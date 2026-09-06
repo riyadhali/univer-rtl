@@ -283,7 +283,11 @@ export class DocSelectionRenderService extends RxDisposable implements IRenderMo
             this._pendingSelection = null;
             return false;
         }
-        if (this._currentSegmentId === '' && ranges.length > 0) {
+        // Only collapsed caret ranges are deferred: a mid-layout echo could
+        // otherwise overwrite the freshly advanced logical caret with a stale
+        // skeleton-derived offset (typing scramble). Non-collapsed selections
+        // (formatting / highlights) must paint immediately.
+        if (ranges.length > 0 && ranges.every((range) => (range.startOffset ?? -1) === (range.endOffset ?? -2))) {
             const progress = this._docSkeletonManagerService.getSkeleton().getLayoutProgress();
             if (progress?.reason === 'edit' && !progress.anchorReady && !progress.complete && !progress.cancelled) {
                 const { unitId } = this._context;
